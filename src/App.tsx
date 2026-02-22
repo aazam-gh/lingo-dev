@@ -10,6 +10,12 @@ interface FeedItem {
   pubDate: string;
   category: string;
   subcategory: string;
+  source: string;
+  sourceLocale: string;
+  translations: Record<
+    string,
+    { title: string; description: string; translatedAt: string }
+  >;
 }
 
 interface TranslationState {
@@ -41,7 +47,7 @@ const LANGUAGES = [
   { code: "uk-UA", name: "Українська", flag: "🇺🇦" },
 ];
 
-const CATEGORIES = ["All", "Economy", "Sport", "Qatar", "Miscellaneous"];
+const CATEGORIES = ["All", "Economy", "Sport", "Qatar", "Miscellaneous", "Investigations", "Culture"];
 
 // ─── Utility Functions ───────────────────────────────────────────────
 function timeAgo(dateString: string): string {
@@ -64,6 +70,10 @@ function getCategoryBadgeClass(category: string): string {
       return "badge-sport";
     case "qatar":
       return "badge-qatar";
+    case "investigations":
+      return "badge-investigations";
+    case "culture":
+      return "badge-culture";
     default:
       return "badge-miscellaneous";
   }
@@ -77,6 +87,10 @@ function getCategoryIcon(category: string): string {
       return "sports_soccer";
     case "qatar":
       return "location_city";
+    case "investigations":
+      return "search";
+    case "culture":
+      return "mosque";
     default:
       return "public";
   }
@@ -127,10 +141,10 @@ function Header({
             </div>
             <div className="flex flex-col">
               <h1 className="text-text-main font-bold text-base leading-tight tracking-tight">
-                QNA <span className="gradient-text">Aggregator</span>
+                Qatar <span className="gradient-text">RSS Feeds</span>
               </h1>
               <span className="text-text-dim text-[10px] font-mono uppercase tracking-widest">
-                Qatar News Agency
+                Qatar RSS Feeds
               </span>
             </div>
           </div>
@@ -184,8 +198,8 @@ function Header({
                           setShowLangDropdown(false);
                         }}
                         className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm hover:bg-surface-hover transition-colors ${selectedLanguage === lang.code
-                            ? "text-primary bg-primary-glow"
-                            : "text-text-secondary"
+                          ? "text-primary bg-primary-glow"
+                          : "text-text-secondary"
                           }`}
                       >
                         <span className="text-lg">{lang.flag}</span>
@@ -231,8 +245,8 @@ function CategoryBar({
             key={cat}
             onClick={() => onCategoryChange(cat)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all duration-200 ${isActive
-                ? "bg-primary/15 text-primary border border-primary/30"
-                : "bg-surface text-text-muted border border-border-subtle hover:border-border-hover hover:text-text-secondary"
+              ? "bg-primary/15 text-primary border border-primary/30"
+              : "bg-surface text-text-muted border border-border-subtle hover:border-border-hover hover:text-text-secondary"
               }`}
           >
             <span
@@ -246,8 +260,8 @@ function CategoryBar({
             {cat}
             <span
               className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${isActive
-                  ? "bg-primary/20 text-primary"
-                  : "bg-surface-highlight text-text-dim"
+                ? "bg-primary/20 text-primary"
+                : "bg-surface-highlight text-text-dim"
                 }`}
             >
               {count}
@@ -291,12 +305,12 @@ function NewsCard({
         {/* Category color accent */}
         <div
           className={`h-0.5 w-full ${item.category === "Economy"
-              ? "bg-gradient-to-r from-primary/60 to-primary"
-              : item.category === "Sport"
-                ? "bg-gradient-to-r from-emerald-dim to-emerald"
-                : item.category === "Qatar"
-                  ? "bg-gradient-to-r from-qatar-maroon-dim to-qatar-maroon"
-                  : "bg-gradient-to-r from-blue-accent/60 to-blue-accent"
+            ? "bg-gradient-to-r from-primary/60 to-primary"
+            : item.category === "Sport"
+              ? "bg-gradient-to-r from-emerald-dim to-emerald"
+              : item.category === "Qatar"
+                ? "bg-gradient-to-r from-qatar-maroon-dim to-qatar-maroon"
+                : "bg-gradient-to-r from-blue-accent/60 to-blue-accent"
             }`}
         />
 
@@ -352,13 +366,13 @@ function NewsCard({
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-primary/60" />
               <span className="text-text-dim text-[10px] font-mono">
-                QNA • {new Date(item.pubDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                {item.source} • {new Date(item.pubDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
               </span>
             </div>
             <span
               className={`material-symbols-outlined text-primary transition-all duration-200 ${isHovered
-                  ? "opacity-100 translate-x-0"
-                  : "opacity-0 -translate-x-1"
+                ? "opacity-100 translate-x-0"
+                : "opacity-0 -translate-x-1"
                 }`}
               style={{ fontSize: "16px" }}
             >
@@ -587,34 +601,55 @@ function App() {
       setIsTranslating(true);
 
       try {
-        // Build texts object for translation (batch all items)
-        const textsToTranslate: Record<string, string> = {};
-        items.forEach((item) => {
-          textsToTranslate[`${item.id}_title`] = item.title;
-          textsToTranslate[`${item.id}_desc`] = item.description;
-        });
-
-        const response = await fetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            texts: textsToTranslate,
-            targetLocale: langCode,
-            sourceLocale: "en",
-          }),
-        });
-
-        if (!response.ok) throw new Error("Translation failed");
-        const data = await response.json();
-
-        // Map translated text back to items
+        // First, check for pre-computed translations from the backend
         const newTranslations: TranslationState = {};
+        const needsTranslation: Record<string, string> = {};
+        let hasPrecomputed = false;
+
         items.forEach((item) => {
-          newTranslations[item.id] = {
-            title: data.translated[`${item.id}_title`] || item.title,
-            description: data.translated[`${item.id}_desc`] || item.description,
-          };
+          if (item.translations && item.translations[langCode]) {
+            // Use pre-computed translation
+            newTranslations[item.id] = {
+              title: item.translations[langCode].title,
+              description: item.translations[langCode].description,
+            };
+            hasPrecomputed = true;
+          } else {
+            // Need to translate on-demand
+            needsTranslation[`${item.id}_title`] = item.title;
+            needsTranslation[`${item.id}_desc`] = item.description;
+          }
         });
+
+        // If there are items that still need translation, call the API
+        if (Object.keys(needsTranslation).length > 0) {
+          const response = await fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              texts: needsTranslation,
+              targetLocale: langCode,
+              sourceLocale: "en",
+            }),
+          });
+
+          if (!response.ok) throw new Error("Translation failed");
+          const data = await response.json();
+
+          // Map translated text back to items
+          items.forEach((item) => {
+            if (!newTranslations[item.id]) {
+              newTranslations[item.id] = {
+                title: data.translated[`${item.id}_title`] || item.title,
+                description: data.translated[`${item.id}_desc`] || item.description,
+              };
+            }
+          });
+        }
+
+        if (hasPrecomputed) {
+          console.log(`Using pre-computed translations for ${langCode}`);
+        }
 
         setTranslations(newTranslations);
         setTranslatedLanguage(langCode);
@@ -662,10 +697,10 @@ function App() {
           <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-6">
             <div>
               <h2 className="font-display text-3xl sm:text-4xl font-bold text-text-main mb-2">
-                News <span className="gradient-text">Intelligence</span>
+                Qatar News <span className="gradient-text">Intelligence</span>
               </h2>
               <p className="text-text-muted text-sm">
-                Aggregated feeds from Qatar News Agency • Updated{" "}
+                Multi-source aggregator: QNA, Doha News, Gulf Times, Al Arab, Marhaba • Updated{" "}
                 <span className="text-text-secondary font-mono text-xs">
                   {new Date().toLocaleTimeString("en-US", {
                     hour: "2-digit",
@@ -793,7 +828,7 @@ function App() {
                 </span>
               </div>
               <span className="text-text-dim text-xs">
-                QNA News Aggregator • Powered by{" "}
+                Qatar RSS Feeds Aggregator • Powered by{" "}
                 <a href="https://lingo.dev" target="_blank" rel="noopener noreferrer" className="text-primary/60 hover:text-primary transition-colors">
                   Lingo.dev
                 </a>
@@ -801,7 +836,7 @@ function App() {
             </div>
             <div className="flex items-center gap-4">
               <span className="text-text-dim text-[10px] font-mono uppercase tracking-widest">
-                Data source: Qatar News Agency (QNA)
+                Sources: Qatar News Agency • Doha News • Gulf Times • Al Arab • Marhaba
               </span>
             </div>
           </div>

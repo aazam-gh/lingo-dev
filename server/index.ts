@@ -1,8 +1,14 @@
 import express from "express";
 import cors from "cors";
-import { parseStringPromise } from "xml2js";
 import dotenv from "dotenv";
-import { LingoDotDevEngine } from "lingo.dev/sdk";
+
+import { getAllArticles, getArticleCount } from "./db.js";
+import { getMetrics } from "./metrics.js";
+import { startScheduler } from "./scheduler.js";
+import {
+    initTranslationQueue,
+    translateOnDemand,
+} from "./translator.js";
 
 dotenv.config();
 
@@ -10,87 +16,41 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RSS_FEEDS = [
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Economy-Local",
-        category: "Economy",
-        subcategory: "Local",
-    },
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Economy-International",
-        category: "Economy",
-        subcategory: "International",
-    },
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Sport-Local",
-        category: "Sport",
-        subcategory: "Local",
-    },
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Sport-International",
-        category: "Sport",
-        subcategory: "International",
-    },
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Miscellaneous-International",
-        category: "Miscellaneous",
-        subcategory: "International",
-    },
-    {
-        url: "https://qna.org.qa/en/Pages/RSS-Feeds/Qatar",
-        category: "Qatar",
-        subcategory: "General",
-    },
-];
-
-interface FeedItem {
-    id: string;
-    title: string;
-    description: string;
-    link: string;
-    pubDate: string;
-    category: string;
-    subcategory: string;
+// ─── Initialize Translation Engine ──────────────────────────────────
+const apiKey = process.env.LINGODOTDEV_API_KEY;
+if (apiKey) {
+    initTranslationQueue(apiKey);
+} else {
+    console.warn("⚠️  LINGODOTDEV_API_KEY not set — translation disabled");
 }
 
-async function fetchFeed(feed: {
-    url: string;
-    category: string;
-    subcategory: string;
-}): Promise<FeedItem[]> {
+// ─── Start Feed Scheduler ────────────────────────────────────────────
+startScheduler();
+
+// ─── API Routes ──────────────────────────────────────────────────────
+
+/**
+ * GET /api/feeds
+ * Returns all stored articles, sorted by pubDate descending.
+ * Includes pre-computed translations if available.
+ */
+app.get("/api/feeds", (_req, res) => {
     try {
-        const response = await fetch(feed.url);
-        const xml = await response.text();
-        const result = await parseStringPromise(xml, { explicitArray: false });
+        const articles = getAllArticles();
 
-        const channel = result.rss?.channel;
-        if (!channel || !channel.item) return [];
-
-        const items = Array.isArray(channel.item)
-            ? channel.item
-            : [channel.item];
-
-        return items.map((item: any) => ({
-            id: item.guid || `${feed.category}-${Date.now()}-${Math.random()}`,
-            title: item.title || "",
-            description: item.description || "",
-            link: item.link || "",
-            pubDate: item.pubDate || "",
-            category: feed.category,
-            subcategory: feed.subcategory,
+        // Map to the frontend's expected shape
+        const items = articles.map((article) => ({
+            id: article.id,
+            title: article.title,
+            description: article.description,
+            link: article.link,
+            pubDate: article.pubDate,
+            category: article.category,
+            subcategory: article.subcategory,
+            source: article.source,
+            sourceLocale: article.sourceLocale,
+            translations: article.translations,
         }));
-    } catch (error) {
-        console.error(`Error fetching feed ${feed.url}:`, error);
-        return [];
-    }
-}
-
-// GET /api/feeds - Fetch all RSS feeds
-app.get("/api/feeds", async (_req, res) => {
-    try {
-        const feedPromises = RSS_FEEDS.map((feed) => fetchFeed(feed));
-        const allFeeds = await Promise.all(feedPromises);
-        const items = allFeeds.flat();
 
         // Sort by pubDate descending
         items.sort(
@@ -105,7 +65,11 @@ app.get("/api/feeds", async (_req, res) => {
     }
 });
 
-// POST /api/translate - Translate content using Lingo.dev SDK
+/**
+ * POST /api/translate
+ * On-demand translation for the frontend.
+ * For articles not yet translated in the background.
+ */
 app.post("/api/translate", async (req, res) => {
     try {
         const { texts, targetLocale, sourceLocale = "en" } = req.body;
@@ -115,24 +79,18 @@ app.post("/api/translate", async (req, res) => {
             return;
         }
 
-        const apiKey = process.env.LINGODOTDEV_API_KEY;
         if (!apiKey) {
-            res.status(500).json({ error: "LINGODOTDEV_API_KEY not configured" });
+            res
+                .status(500)
+                .json({ error: "LINGODOTDEV_API_KEY not configured" });
             return;
         }
 
-        const lingoDotDev = new LingoDotDevEngine({ apiKey });
-
-        // Translate an object where keys are IDs and values are texts
-        const textObj: Record<string, string> = {};
-        for (const [key, value] of Object.entries(texts)) {
-            textObj[key] = value as string;
-        }
-
-        const translated = await lingoDotDev.localizeObject(textObj, {
+        const translated = await translateOnDemand(
+            texts,
             sourceLocale,
-            targetLocale,
-        });
+            targetLocale
+        );
 
         res.json({ translated });
     } catch (error) {
@@ -141,7 +99,26 @@ app.post("/api/translate", async (req, res) => {
     }
 });
 
+/**
+ * GET /api/metrics
+ * Returns feed fetch metrics and summary stats.
+ */
+app.get("/api/metrics", (_req, res) => {
+    try {
+        const metrics = getMetrics();
+        res.json({
+            ...metrics,
+            articleCount: getArticleCount(),
+        });
+    } catch (error) {
+        console.error("Error fetching metrics:", error);
+        res.status(500).json({ error: "Failed to fetch metrics" });
+    }
+});
+
+// ─── Start Server ────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📊 Metrics available at http://localhost:${PORT}/api/metrics`);
 });

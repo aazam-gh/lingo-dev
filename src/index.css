@@ -225,6 +225,18 @@
   border: 1px solid rgba(59, 130, 246, 0.2);
 }
 
+.badge-investigations {
+  background: rgba(168, 85, 247, 0.12);
+  color: #C084FC;
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.badge-culture {
+  background: rgba(245, 158, 11, 0.12);
+  color: #FBBF24;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
 /* Gradient text */
 .gradient-text {
   background: linear-gradient(135deg, var(--color-primary) 0%, #E8D48B 50%, var(--color-primary) 100%);
