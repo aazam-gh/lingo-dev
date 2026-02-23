@@ -621,30 +621,45 @@ function App() {
           }
         });
 
-        // If there are items that still need translation, call the API
-        if (Object.keys(needsTranslation).length > 0) {
-          const response = await fetch("/api/translate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              texts: needsTranslation,
-              targetLocale: langCode,
-              sourceLocale: "en",
-            }),
-          });
+        // If there are items that still need translation, call the API in batches
+        const keys = Object.keys(needsTranslation);
+        if (keys.length > 0) {
+          const BATCH_SIZE = 40; // 20 articles per batch (title + desc)
+          for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+            const batchKeys = keys.slice(i, i + BATCH_SIZE);
+            const batchTexts: Record<string, string> = {};
+            batchKeys.forEach((key) => {
+              batchTexts[key] = needsTranslation[key];
+            });
 
-          if (!response.ok) throw new Error("Translation failed");
-          const data = await response.json();
+            const response = await fetch("/api/translate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                texts: batchTexts,
+                targetLocale: langCode,
+                sourceLocale: "en",
+              }),
+            });
 
-          // Map translated text back to items
-          items.forEach((item) => {
-            if (!newTranslations[item.id]) {
-              newTranslations[item.id] = {
-                title: data.translated[`${item.id}_title`] || item.title,
-                description: data.translated[`${item.id}_desc`] || item.description,
-              };
-            }
-          });
+            if (!response.ok) throw new Error("Translation failed for batch");
+            const data = await response.json();
+
+            // Map translated text back to items for this batch
+            items.forEach((item) => {
+              if (batchTexts[`${item.id}_title`] !== undefined || batchTexts[`${item.id}_desc`] !== undefined) {
+                newTranslations[item.id] = {
+                  title: data.translated[`${item.id}_title`] || item.title,
+                  description: data.translated[`${item.id}_desc`] || item.description,
+                };
+              }
+            });
+
+            // Progressively update translations UI
+            setTranslations({ ...newTranslations });
+          }
+        } else {
+          setTranslations(newTranslations);
         }
 
         if (hasPrecomputed) {
